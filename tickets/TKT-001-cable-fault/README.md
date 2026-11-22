@@ -95,7 +95,5 @@ No configuration changes were required on any device.
 ## Files
 
 - [`lab-broken.pkt`](lab-broken.pkt) – lab with PC1 disconnected
-- 
 - [`lab-fixed.pkt`](lab-fixed.pkt) – lab after the fix
-- 
 - [`screenshots/`](screenshots/) – symptom, diagnosis and verification evidence
