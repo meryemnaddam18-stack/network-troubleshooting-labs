@@ -35,7 +35,7 @@ The base lab file is in [`topology/base-lab.pkt`](topology/).
 | Ticket | Title | Layer | Key Tools | Status |
 |--------|-------|-------|-----------|--------|
 | [TKT-001](tickets/TKT-001-cable-fault/) | Workstation has no network connection | 1 | `show interfaces status` | ✅ Resolved |
-| [TKT-002](tickets/TKT-002-wrong-vlan/) | One PC cannot reach the network | 2 | `show vlan brief` | ⬜ Planned |
+| [TKT-002](tickets/TKT-002-wrong-vlan/) | One PC cannot reach the network | 2 | `show vlan brief` | n | 1 | `show interfaces status` | ✅ Resolved |
 | [TKT-003](tickets/TKT-003-gateway-interface-down/) | All users have no internet, router GUI unreachable | 2–3 | `arp -a`, `show ip interface brief` | ⬜ Planned |
 | [TKT-004](tickets/TKT-004-dhcp-failure/) | Clients receive 169.254.x.x addresses | 3 | `ipconfig`, `show ip dhcp binding`, Wireshark | ⬜ Planned |
 | [TKT-005](tickets/TKT-005-wrong-gateway/) | User can reach local devices but not the internet | 3 | `ipconfig`, `ping` | ⬜ Planned |
