@@ -50,6 +50,7 @@ Fa0/2     Client ports       connected    1          a-full  a-100 10/100BaseTX
 ```
 
 ![Symptom](screenshots/01-symptom.png)
+
 ![Diagnosis](screenshots/02-diagnosis.png)
 
 ## 4. Root Cause
@@ -94,5 +95,7 @@ No configuration changes were required on any device.
 ## Files
 
 - [`lab-broken.pkt`](lab-broken.pkt) – lab with PC1 disconnected
+- 
 - [`lab-fixed.pkt`](lab-fixed.pkt) – lab after the fix
+- 
 - [`screenshots/`](screenshots/) – symptom, diagnosis and verification evidence
