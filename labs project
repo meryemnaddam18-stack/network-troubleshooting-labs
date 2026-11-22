@@ -1,0 +1,34 @@
+network-troubleshooting-labs/
+│
+├── README.md                    ← overview + ticket table
+├── .gitignore
+│
+├── topology/
+│   ├── base-lab.pkt             ← clean working lab (no faults)
+│   ├── base-topology.drawio     ← editable diagram
+│   └── base-topology.png        ← image shown in README
+│
+├── templates/
+│   └── ticket-template.md
+│
+└── tickets/
+    ├── TKT-001-cable-fault/
+    │   ├── README.md            ← filled-in ticket
+    │   ├── lab-broken.pkt       ← lab with the fault
+    │   ├── lab-fixed.pkt        ← lab after the fix
+    │   ├── screenshots/
+    │   │   ├── 01-symptom.png
+    │   │   ├── 02-diagnosis.png
+    │   │   └── 03-verification.png
+    │   └── captures/            ← only if Wireshark used
+    │       └── capture.pcapng
+    │
+    ├── TKT-002-wrong-vlan/
+    ├── TKT-003-gateway-interface-down/
+    ├── TKT-004-dhcp-failure/
+    ├── TKT-005-wrong-gateway/
+    ├── TKT-006-subnet-mask/
+    ├── TKT-007-duplicate-ip/
+    ├── TKT-008-missing-route/
+    ├── TKT-009-dns-failure/
+    └── TKT-010-acl-block/
