@@ -38,7 +38,7 @@ The base lab file is in [`topology/base-lab.pkt`](topology/).
 | [TKT-002](tickets/TKT-002-wrong-vlan/) | One PC cannot reach the network | 2 | `show vlan brief` | ✅ Resolved |
 | [TKT-003](tickets/TKT-003-gateway-interface-down/) | All users have no internet, router GUI unreachable | 2–3 | `arp -a`, `show ip interface brief` | ✅ Resolved |
 | [TKT-004](tickets/TKT-004-dhcp-failure/) | Clients receive 169.254.x.x addresses | 3 | `ipconfig`, `show ip dhcp binding`, Wireshark | ✅ Resolved |
-| [TKT-005](tickets/TKT-005-wrong-gateway/) | User can reach local devices but not the internet | 3 | `ipconfig`, `ping` | ⬜ Planned |
+| [TKT-005](tickets/TKT-005-wrong-gateway/) | User can reach local devices but not the internet | 3 | `ipconfig`, `ping` | ✅ Resolved |
 | [TKT-006](tickets/TKT-006-subnet-mask/) | Some devices reachable, others not | 3 | `ipconfig`, `ping` | ⬜ Planned |
 | [TKT-007](tickets/TKT-007-duplicate-ip/) | Intermittent connectivity on one workstation | 3 | `arp -a`, logs | ⬜ Planned |
 | [TKT-008](tickets/TKT-008-missing-route/) | Gateway reachable, internet unreachable | 3 | `show ip route`, `tracert` | ⬜ Planned |
