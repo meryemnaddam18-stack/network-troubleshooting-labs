@@ -1,33 +1,35 @@
-# TKT-005: User Can Reach Local Devices but Not the Internet
+# TKT-008: Gateway Reachable, Internet Unreachable
 
 | Field | Value |
 |-------|-------|
-| **Reported by** | User at PC1 |
-| **Priority** | Medium |
-| **Affected** | One user (PC1) |
-| **Layer** | 3 – Network (host configuration) |
+| **Reported by** | Multiple users (PC1, PC2) |
+| **Priority** | Critical |
+| **Affected** | Entire site |
+| **Layer** | 3 – Network (routing) |
 | **Status** | ✅ Resolved |
 
 ## 1. Reported Issue
 
-> "I can reach the other computers in the office, but websites won't load."
+> "The whole office lost internet right after this morning's WAN maintenance."
 
 ## 2. Initial Observations
 
-- Only PC1 is affected; PC2 browses normally.
-- PC1 can communicate locally, so Layers 1–2 are working. The problem is with
-  reaching **other networks**, which points to the default gateway or routing.
+- **All** users are affected, so the cause is a shared device or link.
+- Unlike [TKT-003](../TKT-003-gateway-interface-down/), clients can still reach
+  the gateway, so the LAN side of R1 is working.
+- The outage began right after a change on the WAN side.
 
 ## 3. Troubleshooting Steps
 
 | # | Action / Command | Result | Conclusion |
 |---|------------------|--------|------------|
-| 1 | `ping 198.51.100.10` from PC1 | Failed | No access outside the LAN |
-| 2 | `ping` PC2 from PC1 | Successful | Local LAN works |
-| 3 | `ping 192.168.1.1` from PC1 | Successful | R1 is up and reachable — so why isn't traffic leaving? |
-| 4 | `tracert 198.51.100.10` from PC1 | Fails at hop 1 | Packets never reach a router |
-| 5 | `ipconfig /all` on PC1 vs PC2 | PC1 gateway `192.168.1.254`; PC2 gateway `192.168.1.1` | PC1 is sending off-network traffic to a gateway that doesn't exist |
-| 6 | `arp -a` on PC1 | No entry for `192.168.1.254` | Nothing answers at that address |
+| 1 | `ping 198.51.100.10` from PC1 | Failed — reply from `192.168.1.1`: destination unreachable | R1 itself reports it cannot forward the packet |
+| 2 | Same test from PC2 | Same failure | All users affected — shared cause |
+| 3 | `ping 192.168.1.1` from PC1 | Successful | LAN and gateway interface are fine |
+| 4 | `ping 203.0.113.1` (ISP router) from PC1 | Successful | WAN link is up; the directly connected network still works |
+| 5 | `tracert 198.51.100.10` from PC1 | Hop 1 = `192.168.1.1`, then stops | Traffic dies at R1 |
+| 6 | `show ip route` on R1 | "Gateway of last resort is not set", no `S*` route | R1 has no route to destinations beyond its connected networks |
+| 7 | Compared with [`baseline.txt`](../../topology/baseline.txt) | Default route present in baseline, missing now | The default route was removed during maintenance |
 
 **PC1 – `ping 198.51.100.10`:**
 
@@ -41,10 +43,10 @@
 <!-- Paste your real tracert output here -->
 ```
 
-**PC1 – `ipconfig /all`:**
+**R1 – `show ip route`:**
 
 ```
-<!-- Paste your real PC1 output here -->
+<!-- Paste your real R1 output here -->
 ```
 
 ![Symptom](screenshots/01-symptom.png)
@@ -52,45 +54,53 @@
 
 ## 4. Root Cause
 
-PC1 had been manually configured with a static IP and an incorrect default
-gateway (`192.168.1.254`) instead of the router's address (`192.168.1.1`).
-Traffic to the local subnet is delivered directly and worked, but all traffic
-to other networks was sent to a gateway that does not exist, so it was dropped.
+The static default route on R1 (`ip route 0.0.0.0 0.0.0.0 203.0.113.1`) was
+removed during WAN maintenance. Without it, R1 only knew about its directly
+connected networks (`192.168.1.0/24` and `203.0.113.0/30`). Packets for any
+other destination, including the server and DNS at `198.51.100.10`, had no
+matching route, so R1 dropped them and returned ICMP "destination unreachable"
+messages to the clients.
 
 ## 5. Resolution
 
-Set PC1's IP configuration back to **DHCP** so it receives the correct gateway
-automatically, rather than only correcting the static gateway. The static
-address `192.168.1.50` also falls inside the DHCP pool and could later
-cause an IP conflict.
+Restored the default route on R1:
+
+```
+conf t
+ip route 0.0.0.0 0.0.0.0 203.0.113.1
+end
+write memory
+```
 
 ## 6. Verification
 
 | Test | Result |
 |------|--------|
-| `ipconfig` on PC1 | DHCP address, gateway `192.168.1.1` ✅ |
-| `ping 198.51.100.10` | Successful ✅ |
-| `tracert 198.51.100.10` | Path via `192.168.1.1` → `203.0.113.1` → server ✅ |
+| `show ip route` on R1 | `S* 0.0.0.0/0 [1/0] via 203.0.113.1`, gateway of last resort set ✅ |
+| `tracert 198.51.100.10` | `192.168.1.1` → `203.0.113.1` → `198.51.100.10` ✅ |
+| `ping 198.51.100.10` from PC1 and PC2 | Successful ✅ |
 | Browser → `http://www.lab.local` | Page loads ✅ |
 
 ![Verification](screenshots/03-verification.png)
 
 ## 7. Lessons Learned
 
-- **Local works, remote fails → check the gateway.** A host only uses its default
-  gateway for traffic leaving its own subnet.
-- **A reachable router doesn't prove the gateway is right.** Pinging
-  `192.168.1.1` succeeded because it is on the same subnet, yet PC1 was configured
-  to use a different address as its gateway.
-- **`tracert` pinpoints where traffic stops.** Failing at hop 1 means the packet
-  never reached a router.
-- **Compare with a working host.** Putting PC1's and PC2's `ipconfig /all` side
-  by side made the difference obvious.
-- **Prevention:** Use DHCP for client devices, and keep static addresses for
-  infrastructure, outside the DHCP range.
+- **Gateway works, internet doesn't → check the router's routing table.**
+  If clients reach the gateway, the LAN is fine; the problem is what the router
+  does with traffic next.
+- **Read who sends the error.** A "destination unreachable" reply *from the
+  gateway's IP* means the router received the packet but had nowhere to send it.
+- **Directly connected networks keep working.** The ISP router (`203.0.113.1`)
+  was still reachable because R1 doesn't need a static route for its own links,
+  which helped narrow the problem to routing, not the WAN link.
+- **`tracert` shows where traffic stops.** Stopping right after hop 1 pointed at R1.
+- **Baselines pay off.** Comparing the routing table with the saved baseline
+  showed exactly what changed.
+- **Prevention:** Back up configurations before maintenance, compare after
+  changes, and verify `show ip route` as part of every change checklist.
 
 ## Files
 
-- [`lab-broken.pkt`](lab-broken.pkt) – lab with PC1's wrong gateway
+- [`lab-broken.pkt`](lab-broken.pkt) – lab with R1's default route removed
 - [`lab-fixed.pkt`](lab-fixed.pkt) – lab after the fix
 - [`screenshots/`](screenshots/) – symptom, diagnosis and verification evidence
