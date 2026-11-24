@@ -1,50 +1,51 @@
-# TKT-005: User Can Reach Local Devices but Not the Internet
+# TKT-007: Intermittent Connectivity on One Workstation
 
 | Field | Value |
 |-------|-------|
 | **Reported by** | User at PC1 |
 | **Priority** | Medium |
-| **Affected** | One user (PC1) |
-| **Layer** | 3 – Network (host configuration) |
+| **Affected** | PC1 |
+| **Layer** | 3 – Network (addressing), visible at Layer 2 (ARP) |
 | **Status** | ✅ Resolved |
 
 ## 1. Reported Issue
 
-> "I can reach the other computers in the office, but websites won't load."
+> "My internet keeps cutting in and out since this morning. Sometimes it works, sometimes it doesn't."
 
 ## 2. Initial Observations
 
-- Only PC1 is affected; PC2 browses normally.
-- PC1 can communicate locally, so Layers 1–2 are working. The problem is with
-  reaching **other networks**, which points to the default gateway or routing.
+- PC1's connection is **intermittent**, not completely down.
+- That morning, the network admin configured a management IP on the switch (SW1).
+- Intermittent problems on one address, starting right after a change, are a
+  classic sign of an IP address conflict.
 
 ## 3. Troubleshooting Steps
 
 | # | Action / Command | Result | Conclusion |
 |---|------------------|--------|------------|
-| 1 | `ping 198.51.100.10` from PC1 | Failed | No access outside the LAN |
-| 2 | `ping` PC2 from PC1 | Successful | Local LAN works |
-| 3 | `ping 192.168.1.1` from PC1 | Successful | R1 is up and reachable — so why isn't traffic leaving? |
-| 4 | `tracert 198.51.100.10` from PC1 | Fails at hop 1 | Packets never reach a router |
-| 5 | `ipconfig /all` on PC1 vs PC2 | PC1 gateway `192.168.1.254`; PC2 gateway `192.168.1.1` | PC1 is sending off-network traffic to a gateway that doesn't exist |
-| 6 | `arp -a` on PC1 | No entry for `192.168.1.254` | Nothing answers at that address |
+| 1 | `ping 198.51.100.10` from PC1 | Successful | Connection works at first |
+| 2 | SW1 sends traffic (`ping 192.168.1.1`) | — | SW1's management interface becomes active |
+| 3 | `ping 198.51.100.10` from PC1 again | Failed / timed out | Connectivity drops after SW1 is active |
+| 4 | `show ip arp` on R1 | `192.168.1.11` mapped to a MAC that is **not PC1's** | R1 sends PC1's replies to another device |
+| 5 | `ipconfig /all` on PC1 | PC1's MAC differs from R1's ARP entry | Another device is using PC1's IP |
+| 6 | `show ip interface brief` and `show interfaces vlan 1` on SW1 | Vlan1 = `192.168.1.11`, MAC matches R1's ARP entry | SW1's management IP duplicates PC1's DHCP address |
 
-**PC1 – `ping 198.51.100.10`:**
-
-```
-<!-- Paste your real ping output here -->
-```
-
-**PC1 – `tracert 198.51.100.10`:**
+**R1 – `show ip arp`:**
 
 ```
-<!-- Paste your real tracert output here -->
+<!-- Paste your real R1 output here -->
 ```
 
-**PC1 – `ipconfig /all`:**
+**PC1 – `ipconfig /all` (IP and MAC):**
 
 ```
-<!-- Paste your real PC1 output here -->
+<!-- Paste the relevant lines here -->
+```
+
+**SW1 – `show ip interface brief` / `show interfaces vlan 1`:**
+
+```
+<!-- Paste your real SW1 output here -->
 ```
 
 ![Symptom](screenshots/01-symptom.png)
@@ -52,45 +53,65 @@
 
 ## 4. Root Cause
 
-PC1 had been manually configured with a static IP and an incorrect default
-gateway (`192.168.1.254`) instead of the router's address (`192.168.1.1`).
-Traffic to the local subnet is delivered directly and worked, but all traffic
-to other networks was sent to a gateway that does not exist, so it was dropped.
+SW1's management interface (VLAN 1 SVI) was configured with the static IP
+`192.168.1.11`, which the DHCP server had already leased to PC1. Both devices
+answered for the same address.
+
+Each time one of them sent traffic, R1 updated its ARP table to map
+`192.168.1.11` to that device's MAC address. While the entry pointed to SW1,
+replies meant for PC1 were delivered to the switch instead, so PC1's
+connection kept working and failing.
 
 ## 5. Resolution
 
-Set PC1's IP configuration back to **DHCP** so it receives the correct gateway
-automatically, rather than only correcting the static gateway. The static
-address `192.168.1.50` also falls inside the DHCP pool and could later
-cause an IP conflict.
+Moved SW1's management IP to an address in the excluded (infrastructure) range
+and set its default gateway:
+
+```
+conf t
+interface vlan 1
+ ip address 192.168.1.2 255.255.255.0
+exit
+ip default-gateway 192.168.1.1
+end
+write memory
+```
+
+Then cleared R1's ARP cache so the correct mapping was learned again:
+
+```
+clear arp-cache
+```
 
 ## 6. Verification
 
 | Test | Result |
 |------|--------|
-| `ipconfig` on PC1 | DHCP address, gateway `192.168.1.1` ✅ |
-| `ping 198.51.100.10` | Successful ✅ |
-| `tracert 198.51.100.10` | Path via `192.168.1.1` → `203.0.113.1` → server ✅ |
-| Browser → `http://www.lab.local` | Page loads ✅ |
+| `show ip interface brief` on SW1 | Vlan1 = `192.168.1.2` ✅ |
+| `show ip arp` on R1 | `192.168.1.11` mapped to PC1's MAC ✅ |
+| Repeated pings from PC1 to the server | Consistently successful ✅ |
+| `ping 192.168.1.2` from PC1 | Switch management reachable ✅ |
+| Browser → `http://www.lab.local` on PC1 | Page loads ✅ |
 
 ![Verification](screenshots/03-verification.png)
 
 ## 7. Lessons Learned
 
-- **Local works, remote fails → check the gateway.** A host only uses its default
-  gateway for traffic leaving its own subnet.
-- **A reachable router doesn't prove the gateway is right.** Pinging
-  `192.168.1.1` succeeded because it is on the same subnet, yet PC1 was configured
-  to use a different address as its gateway.
-- **`tracert` pinpoints where traffic stops.** Failing at hop 1 means the packet
-  never reached a router.
-- **Compare with a working host.** Putting PC1's and PC2's `ipconfig /all` side
-  by side made the difference obvious.
-- **Prevention:** Use DHCP for client devices, and keep static addresses for
-  infrastructure, outside the DHCP range.
+- **Intermittent + recent change = suspect a duplicate IP.** Conflicts rarely cause
+  a clean outage; they cause connections that come and go.
+- **Follow the MAC address.** The ARP table shows which MAC owns an IP *right now*.
+  Comparing it with each device's MAC identified the conflicting device.
+- **Conflicts aren't only between PCs.** Infrastructure devices (switches,
+  printers, access points) with manually set IPs are a common source.
+- **Hosts often detect conflicts themselves.** When I first tried to give a second
+  PC the same static IP, Packet Tracer refused with *"This address is already used
+  in the network"*, much like Windows' IP conflict warning. Devices configured from
+  the CLI, like the switch here, don't get that check, so the conflict went unnoticed.
+- **Prevention:** Reserve a range for infrastructure (here `.1–.10`, already excluded
+  from DHCP), document every static IP, and never assign static addresses inside the DHCP pool.
 
 ## Files
 
-- [`lab-broken.pkt`](lab-broken.pkt) – lab with PC1's wrong gateway
+- [`lab-broken.pkt`](lab-broken.pkt) – lab with SW1's management IP duplicating PC1
 - [`lab-fixed.pkt`](lab-fixed.pkt) – lab after the fix
 - [`screenshots/`](screenshots/) – symptom, diagnosis and verification evidence
