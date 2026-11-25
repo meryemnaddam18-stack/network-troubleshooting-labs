@@ -1,50 +1,58 @@
-# TKT-005: User Can Reach Local Devices but Not the Internet
+# TKT-009: Websites Don't Load, but Ping by IP Works
 
 | Field | Value |
 |-------|-------|
-| **Reported by** | User at PC1 |
-| **Priority** | Medium |
-| **Affected** | One user (PC1) |
-| **Layer** | 3 – Network (host configuration) |
+| **Reported by** | Multiple users (PC1, PC2) |
+| **Priority** | High |
+| **Affected** | All DHCP clients |
+| **Layer** | 7 – Application (DNS) |
 | **Status** | ✅ Resolved |
 
 ## 1. Reported Issue
 
-> "I can reach the other computers in the office, but websites won't load."
+> "The internet is down — no websites will load."
 
 ## 2. Initial Observations
 
-- Only PC1 is affected; PC2 browses normally.
-- PC1 can communicate locally, so Layers 1–2 are working. The problem is with
-  reaching **other networks**, which points to the default gateway or routing.
+- All clients are affected.
+- Users report "no internet", but that only describes what they see in the browser.
+  The first job is to test whether the **network** is actually down or only **name resolution**.
 
 ## 3. Troubleshooting Steps
 
 | # | Action / Command | Result | Conclusion |
 |---|------------------|--------|------------|
-| 1 | `ping 198.51.100.10` from PC1 | Failed | No access outside the LAN |
-| 2 | `ping` PC2 from PC1 | Successful | Local LAN works |
-| 3 | `ping 192.168.1.1` from PC1 | Successful | R1 is up and reachable — so why isn't traffic leaving? |
-| 4 | `tracert 198.51.100.10` from PC1 | Fails at hop 1 | Packets never reach a router |
-| 5 | `ipconfig /all` on PC1 vs PC2 | PC1 gateway `192.168.1.254`; PC2 gateway `192.168.1.1` | PC1 is sending off-network traffic to a gateway that doesn't exist |
-| 6 | `arp -a` on PC1 | No entry for `192.168.1.254` | Nothing answers at that address |
+| 1 | Browser → `http://www.lab.local` on PC1 | "Host Name Unresolved" | Browser cannot turn the name into an IP |
+| 2 | `ping www.lab.local` | Could not find host | Name resolution fails |
+| 3 | `ping 198.51.100.10` | Successful | Routing and the path to the server work |
+| 4 | Browser → `http://198.51.100.10` | Page loads | Web server works — **the problem is DNS** |
+| 5 | `nslookup www.lab.local` | Fails; queried server `198.51.100.99` | Client is asking the wrong DNS server |
+| 6 | `ipconfig /all` on PC1 | DNS server `198.51.100.99` (correct is `198.51.100.10`) | Wrong DNS setting on the client |
+| 7 | `ping 198.51.100.99` | Failed | No DNS server exists at that address |
+| 8 | `show running-config \| include dns` on R1 | `dns-server 198.51.100.99` | The wrong address is handed out by DHCP |
 
-**PC1 – `ping 198.51.100.10`:**
-
-```
-<!-- Paste your real ping output here -->
-```
-
-**PC1 – `tracert 198.51.100.10`:**
+**PC1 – browser / `ping www.lab.local`:**
 
 ```
-<!-- Paste your real tracert output here -->
+<!-- Paste your real output here -->
 ```
 
-**PC1 – `ipconfig /all`:**
+**PC1 – `nslookup www.lab.local`:**
 
 ```
-<!-- Paste your real PC1 output here -->
+<!-- Paste your real nslookup output here -->
+```
+
+**PC1 – `ipconfig /all` (DNS line):**
+
+```
+<!-- Paste your real output here -->
+```
+
+**R1 – `show running-config | include dns`:**
+
+```
+<!-- Paste your real R1 output here -->
 ```
 
 ![Symptom](screenshots/01-symptom.png)
@@ -52,45 +60,51 @@
 
 ## 4. Root Cause
 
-PC1 had been manually configured with a static IP and an incorrect default
-gateway (`192.168.1.254`) instead of the router's address (`192.168.1.1`).
-Traffic to the local subnet is delivered directly and worked, but all traffic
-to other networks was sent to a gateway that does not exist, so it was dropped.
+The DHCP pool on R1 was configured with the wrong DNS server address
+(`198.51.100.99` instead of `198.51.100.10`). Every client that renewed its lease
+received this address, sent its DNS queries to a host that doesn't exist, and
+could not resolve any names. Routing and the web server were working the whole time.
 
 ## 5. Resolution
 
-Set PC1's IP configuration back to **DHCP** so it receives the correct gateway
-automatically, rather than only correcting the static gateway. The static
-address `192.168.1.50` also falls inside the DHCP pool and could later
-cause an IP conflict.
+Corrected the DNS server in the DHCP pool:
+
+```
+conf t
+ip dhcp pool LAN
+ dns-server 198.51.100.10
+end
+write memory
+```
+
+Renewed the IP configuration on both PCs to receive the corrected setting.
 
 ## 6. Verification
 
 | Test | Result |
 |------|--------|
-| `ipconfig` on PC1 | DHCP address, gateway `192.168.1.1` ✅ |
-| `ping 198.51.100.10` | Successful ✅ |
-| `tracert 198.51.100.10` | Path via `192.168.1.1` → `203.0.113.1` → server ✅ |
+| `ipconfig /all` on PC1 and PC2 | DNS server `198.51.100.10` ✅ |
+| `nslookup www.lab.local` | Resolves to `198.51.100.10` ✅ |
+| `ping www.lab.local` | Successful ✅ |
 | Browser → `http://www.lab.local` | Page loads ✅ |
 
 ![Verification](screenshots/03-verification.png)
 
 ## 7. Lessons Learned
 
-- **Local works, remote fails → check the gateway.** A host only uses its default
-  gateway for traffic leaving its own subnet.
-- **A reachable router doesn't prove the gateway is right.** Pinging
-  `192.168.1.1` succeeded because it is on the same subnet, yet PC1 was configured
-  to use a different address as its gateway.
-- **`tracert` pinpoints where traffic stops.** Failing at hop 1 means the packet
-  never reached a router.
-- **Compare with a working host.** Putting PC1's and PC2's `ipconfig /all` side
-  by side made the difference obvious.
-- **Prevention:** Use DHCP for client devices, and keep static addresses for
-  infrastructure, outside the DHCP range.
+- **Ping by IP vs ping by name.** If the IP works and the name doesn't, it's DNS.
+  This one test separates "network down" from "names down".
+- **"No internet" is a symptom, not a diagnosis.** The network was healthy the
+  whole time; only name resolution was broken.
+- **`nslookup` shows which server is being asked**, which pointed straight to the
+  wrong DNS address.
+- **Follow the setting to its source.** The client wasn't misconfigured by hand;
+  DHCP gave it the wrong value, so fixing the DHCP pool fixed every client.
+- **Prevention:** Verify DHCP options (gateway, DNS) after any change, and consider
+  a secondary DNS server so one failure doesn't stop name resolution.
 
 ## Files
 
-- [`lab-broken.pkt`](lab-broken.pkt) – lab with PC1's wrong gateway
+- [`lab-broken.pkt`](lab-broken.pkt) – lab with the wrong DNS server in DHCP
 - [`lab-fixed.pkt`](lab-fixed.pkt) – lab after the fix
 - [`screenshots/`](screenshots/) – symptom, diagnosis and verification evidence
