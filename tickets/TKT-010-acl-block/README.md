@@ -1,50 +1,53 @@
-# TKT-005: User Can Reach Local Devices but Not the Internet
+# TKT-010: Ping Fails but Web Browsing Works
 
 | Field | Value |
 |-------|-------|
-| **Reported by** | User at PC1 |
+| **Reported by** | Network monitoring / IT staff |
 | **Priority** | Medium |
-| **Affected** | One user (PC1) |
-| **Layer** | 3 – Network (host configuration) |
+| **Affected** | All LAN clients (ICMP only) |
+| **Layer** | 3–4 (ACL filtering) |
 | **Status** | ✅ Resolved |
 
 ## 1. Reported Issue
 
-> "I can reach the other computers in the office, but websites won't load."
+> "Our monitoring shows the gateway and the server as down, but users say websites work fine."
 
 ## 2. Initial Observations
 
-- Only PC1 is affected; PC2 browses normally.
-- PC1 can communicate locally, so Layers 1–2 are working. The problem is with
-  reaching **other networks**, which points to the default gateway or routing.
+- Ping-based monitoring reports outages, yet users can browse normally.
+- That morning, a security change was made to block pings from the internet.
+- When different types of traffic behave differently, something is **filtering**
+  traffic rather than the network being down.
 
 ## 3. Troubleshooting Steps
 
 | # | Action / Command | Result | Conclusion |
 |---|------------------|--------|------------|
-| 1 | `ping 198.51.100.10` from PC1 | Failed | No access outside the LAN |
-| 2 | `ping` PC2 from PC1 | Successful | Local LAN works |
-| 3 | `ping 192.168.1.1` from PC1 | Successful | R1 is up and reachable — so why isn't traffic leaving? |
-| 4 | `tracert 198.51.100.10` from PC1 | Fails at hop 1 | Packets never reach a router |
-| 5 | `ipconfig /all` on PC1 vs PC2 | PC1 gateway `192.168.1.254`; PC2 gateway `192.168.1.1` | PC1 is sending off-network traffic to a gateway that doesn't exist |
-| 6 | `arp -a` on PC1 | No entry for `192.168.1.254` | Nothing answers at that address |
+| 1 | `ping 198.51.100.10` from PC1 | Failed | Server appears unreachable |
+| 2 | `ping 192.168.1.1` from PC1 | Failed | Gateway appears unreachable — looks like [TKT-003](../TKT-003-gateway-interface-down/) |
+| 3 | Browser → `http://www.lab.local` | Page loads | Network is up; only ICMP is affected |
+| 4 | `arp -a` on PC1 | Gateway MAC present | Layer 2 to R1 is fine — not an interface outage |
+| 5 | `tracert 198.51.100.10` | Failed | tracert also relies on ICMP |
+| 6 | `show ip interface brief` on R1 | G0/0 `up / up` | Interface is healthy |
+| 7 | `show ip interface g0/0` on R1 | "Inbound access list is 110" | An ACL filters traffic entering from the LAN |
+| 8 | `show access-lists` on R1 | `deny icmp any any`, match count increasing with each ping | ACL 110 is dropping all ICMP from LAN users |
 
-**PC1 – `ping 198.51.100.10`:**
-
-```
-<!-- Paste your real ping output here -->
-```
-
-**PC1 – `tracert 198.51.100.10`:**
+**PC1 – ping results:**
 
 ```
-<!-- Paste your real tracert output here -->
+<!-- Paste your real ping outputs here -->
 ```
 
-**PC1 – `ipconfig /all`:**
+**R1 – `show ip interface g0/0` (ACL line):**
 
 ```
-<!-- Paste your real PC1 output here -->
+<!-- Paste the relevant lines here -->
+```
+
+**R1 – `show access-lists`:**
+
+```
+<!-- Paste your real R1 output here -->
 ```
 
 ![Symptom](screenshots/01-symptom.png)
@@ -52,45 +55,86 @@
 
 ## 4. Root Cause
 
-PC1 had been manually configured with a static IP and an incorrect default
-gateway (`192.168.1.254`) instead of the router's address (`192.168.1.1`).
-Traffic to the local subnet is delivered directly and worked, but all traffic
-to other networks was sent to a gateway that does not exist, so it was dropped.
+The goal of the security change was to block pings **coming from the internet**.
+Instead, ACL 110 (`deny icmp any any`) was applied **inbound on the LAN interface
+G0/0**. This dropped every ICMP packet sent by internal users, including pings to
+the gateway itself, while HTTP and DNS traffic was still permitted. Ping-based
+monitoring therefore reported outages even though the network was working.
+
+Two mistakes:
+1. **Wrong interface/direction:** LAN inbound instead of WAN inbound.
+2. **Too broad:** `deny icmp any any` blocks all ICMP, including echo-replies and
+   error messages, not just incoming ping requests.
 
 ## 5. Resolution
 
-Set PC1's IP configuration back to **DHCP** so it receives the correct gateway
-automatically, rather than only correcting the static gateway. The static
-address `192.168.1.50` also falls inside the DHCP pool and could later
-cause an IP conflict.
+Removed ACL 110 and implemented the intended policy: block ping requests
+(`echo`) arriving from the internet on the WAN interface, while allowing replies
+to internal users' traffic.
+
+```
+conf t
+interface g0/0
+ no ip access-group 110 in
+exit
+no access-list 110
+access-list 120 deny icmp any any echo
+access-list 120 permit ip any any
+interface g0/1
+ ip access-group 120 in
+end
+write memory
+```
 
 ## 6. Verification
 
 | Test | Result |
 |------|--------|
-| `ipconfig` on PC1 | DHCP address, gateway `192.168.1.1` ✅ |
-| `ping 198.51.100.10` | Successful ✅ |
-| `tracert 198.51.100.10` | Path via `192.168.1.1` → `203.0.113.1` → server ✅ |
+| `ping 192.168.1.1` and `ping 198.51.100.10` from PC1 | Successful ✅ |
+| `tracert 198.51.100.10` | Completes ✅ |
 | Browser → `http://www.lab.local` | Page loads ✅ |
+| `ping 203.0.113.2` from ISP-R (outside) | `UUUUU` — blocked by ACL 120, as intended ✅ |
+| `show access-lists` on R1 | ACL 120 deny line shows matches from the outside ping ✅ |
+
+**ISP-R – ping from outside after the fix:**
+
+```
+ISP-R#ping 203.0.113.2
+
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 203.0.113.2, timeout is 2 seconds:
+UUUUU
+Success rate is 0 percent (0/5)
+```
+
+**R1 – `show access-lists` after the fix:**
+
+```
+<!-- Paste your real R1 output here (ACL 120 with match counts) -->
+```
 
 ![Verification](screenshots/03-verification.png)
 
 ## 7. Lessons Learned
 
-- **Local works, remote fails → check the gateway.** A host only uses its default
-  gateway for traffic leaving its own subnet.
-- **A reachable router doesn't prove the gateway is right.** Pinging
-  `192.168.1.1` succeeded because it is on the same subnet, yet PC1 was configured
-  to use a different address as its gateway.
-- **`tracert` pinpoints where traffic stops.** Failing at hop 1 means the packet
-  never reached a router.
-- **Compare with a working host.** Putting PC1's and PC2's `ipconfig /all` side
-  by side made the difference obvious.
-- **Prevention:** Use DHCP for client devices, and keep static addresses for
-  infrastructure, outside the DHCP range.
+- **Ping failing doesn't mean the network is down.** ICMP is often filtered; test
+  with the actual application (web, DNS) before declaring an outage.
+- **Different traffic, different result → suspect an ACL or firewall.**
+- **Check `show ip interface` for applied ACLs** and use `show access-lists`
+  match counters to confirm which line is dropping traffic.
+- **Placement matters.** Extended ACLs should be applied close to the source of the
+  traffic you want to block — here, inbound on the WAN interface, not the LAN.
+- **Be specific.** `deny icmp any any echo` blocks ping requests only;
+  `deny icmp any any` also breaks replies, tracert and useful error messages.
+- **Reading Cisco ping output:** `U` means a router sent back "unreachable" (here,
+  R1 reporting that the ACL denied the packet); `.` means no reply at all (timeout).
+  To hide the router's response from outsiders, `no ip unreachables` can be set on
+  the WAN interface so blocked pings simply time out.
+- **Prevention:** Test ACLs from both inside and outside after applying them, and
+  include monitoring checks in the change's verification steps.
 
 ## Files
 
-- [`lab-broken.pkt`](lab-broken.pkt) – lab with PC1's wrong gateway
-- [`lab-fixed.pkt`](lab-fixed.pkt) – lab after the fix
+- [`lab-broken.pkt`](lab-broken.pkt) – lab with ACL 110 on the LAN interface
+- [`lab-fixed.pkt`](lab-fixed.pkt) – lab with the corrected ACL 120 on the WAN interface
 - [`screenshots/`](screenshots/) – symptom, diagnosis and verification evidence
