@@ -1,16 +1,16 @@
-# TKT-012: User's Computer Has No Network After Returning to Desk
+# TKT-015: One User Has No Internet, Coworker on the Same Network Is Fine
 
 | Field | Value |
 |-------|-------|
-| **Reported by** | User at PC1 (front desk) |
-| **Opened** | 9:40 AM |
+| **Reported by** | User at PC1 |
+| **Opened** | 9:15 AM |
 | **Priority** | Medium |
-| **Affected** | One user (PC1) |
-| **Layer** | 2 – Data Link (switch port security) |
+| **Affected** | PC1 (and any client renewing its DHCP lease) |
+| **Layer** | 3 / 7 – Wrong default gateway handed out by DHCP |
 | **Status** | ✅ Resolved |
 
 > 🔒 **Blind troubleshooting exercise.** I did not know the fault in advance. It was
-> run as an interview-style simulation: I asked for commands and questioned the user,
+> run as an interview-style simulation: I asked for commands and questioned the users,
 > and diagnosed the fault only from what I received. This write-up records my real
 > path, including wrong turns. It was then reproduced in Packet Tracer for the lab
 > files and screenshots.
@@ -19,195 +19,140 @@
 
 **Work log**
 
-1. Asked the user for their computer details and had them run `ipconfig /all`: no IPv4 address and no IPv6 link-local address.
-2. Checked DHCP bindings and ACLs on R1. DHCP was working; no ACLs.
-3. Realised the missing link-local address meant PC1's interface was down, so DHCP was never reached.
-4. User confirmed the cable was plugged in but the port light was off. SW1 showed Fa0/1 `down`.
-5. `show interface fa0/1` revealed the port was **err-disabled**.
-6. Port-security status and switch logs showed a violation by an unknown MAC address at 8:47 AM.
-7. The user confirmed they had plugged a personal laptop into the desk cable at that time.
-8. Reset the port (`shutdown` / `no shutdown`) and verified PC1 was back online.
+1. Remotely ran `ipconfig /all` on PC1: default gateway `192.168.1.100` instead of `192.168.1.1`, received from the DHCP server `192.168.1.1`.
+2. Checked DHCP bindings on R1 and VLANs on SW1. Both PCs in VLAN 1; lease times showed PC1 renewed this morning and PC2 yesterday afternoon.
+3. Renewed PC1's lease: received the same wrong gateway, which confirmed DHCP itself was handing it out.
+4. `show running-config | section dhcp` on R1 showed `default-router 192.168.1.100`, changed the previous evening for a firewall not yet installed.
+5. Set the pool's default router back to `192.168.1.1`, renewed both clients, and verified internet access.
 
 **Closure note to user**
-> "The network port at your desk only accepts your work computer. When your personal
-> laptop was plugged in, the switch blocked the port for security. I've reset it and
-> your computer is working again. Please don't connect personal devices to the wired
-> network; use the guest Wi-Fi instead."
+> "A setting on the office router was changed last night and gave your computer the
+> wrong gateway when it reconnected this morning. Your coworker hadn't reconnected yet,
+> so they weren't affected. It's fixed for everyone now."
 
 ## 1. Reported Issue
 
-> "My computer has no network since I came back to my desk this morning. Everyone else seems fine. I didn't change anything!"
+> "My internet stopped working this morning, but my coworker at the next desk (PC2) is fine. We're on the same network, so I don't understand!"
 
 ## 2. Initial Observations
 
-- Only PC1 is affected, so the cause is likely on PC1's own connection.
-- The user states nothing changed, but users don't always connect their actions to the problem.
+- Only PC1 is affected; PC2 on the same switch and VLAN works.
+- Same network but different behaviour suggests a difference in **client configuration**.
 
 ## 3. Troubleshooting Steps
 
 | # | Action / Command | Result | Conclusion |
 |---|------------------|--------|------------|
-| 1 | Asked user for computer name / IP | "PC1"; user didn't know the IP | Walked the user through running the command |
-| 2 | `ipconfig /all` on PC1 | IPv4 `0.0.0.0`, link-local IPv6 `::` (empty), MAC `0090.2182.9963` | No address at all |
-| 3 | `show ip dhcp binding` on R1 | PC1's MAC still has a binding; PC2 has a lease | DHCP server is working |
-| 4 | `show access-lists` on R1 | None | No filtering |
-| 5 | Re-read step 2 | No `FE80::` link-local address | ❗ I first thought DHCP wasn't responding, then that a static IP was needed. But a missing link-local address means **the interface is down**, so DHCP requests never left PC1 |
-| 6 | Asked user about cable and link light | Cable plugged in, **no light** on PC port | Physical link is not up |
-| 7 | `show ip interface brief` on SW1 | Fa0/1 `down / down` | Port is down, but this doesn't say why |
-| 8 | `show interface fa0/1` on SW1 | `line protocol is down (err-disabled)` | The switch shut the port down on purpose |
-| 9 | `show port-security interface fa0/1` | `Secure-shutdown`, max 1 MAC, sticky MAC learned, last source `0002.4AEE.4703`, violation count 1 | A port-security violation disabled the port |
-| 10 | `show logging` on SW1 | `PSECURE_VIOLATION ... caused by MAC address 0002.4AEE.4703` at **08:47** | Exact time and the offending MAC |
-| 11 | Compared MACs | `0002.4AEE.4703` ≠ PC1's `0090.2182.9963` | A different device was connected to PC1's port |
-| 12 | Asked the user about 8:47 AM | User had plugged a **personal laptop** into the desk cable to download something | Root cause confirmed |
+| 1 | `ipconfig /all` on PC1 (remote) | Gateway `192.168.1.100`; DHCP server `192.168.1.1` | Wrong gateway, and it came **from DHCP**, not a manual setting (unlike [TKT-005](../TKT-005-wrong-gateway/)) |
+| 2 | `show vlan brief` on SW1 | Fa0/1 and Fa0/2 both in VLAN 1 | VLAN is not the issue |
+| 3 | `show ip dhcp binding` on R1 | PC1 lease expires Nov 27 08:02; PC2 lease expires Nov 26 16:47 (1-day leases) | PC1 got its lease **this morning**; PC2 **yesterday afternoon** |
+| 4 | Interpreted the lease times | ❗ I first read them backwards and thought PC1 had the *old* parameters | Correct reading: PC1 has the **new** (wrong) parameters; PC2 still has the old (correct) ones |
+| 5 | `ipconfig /release` + `/renew` on PC1 | Same gateway `192.168.1.100` again | The DHCP server is actively handing out the wrong gateway |
+| 6 | `show ip dhcp pool` and `show running-config \| include dhcp` on R1 | Pool usage only; no gateway shown | ❗ Neither command displays `default-router`; the line doesn't contain the word "dhcp" |
+| 7 | `show running-config \| section dhcp` on R1 | `default-router 192.168.1.100` | **Root cause confirmed** |
+| 8 | Asked the IT team about changes | Pool updated the previous evening for a planned firewall at `.100`, not yet installed | Explains the timing |
 
 **PC1 – `ipconfig /all`:**
 
 ```
-C:\>ipconfig /all
-
-FastEthernet0 Connection:(default port)
-
-   Connection-specific DNS Suffix..: 
-   Physical Address................: 0090.2182.9963
-   Link-local IPv6 Address.........: ::
-   IPv6 Address....................: ::
-   IPv4 Address....................: 0.0.0.0
-   Subnet Mask.....................: 0.0.0.0
-   Default Gateway.................: ::
-                                     0.0.0.0
+<!-- Paste your Packet Tracer output here -->
+   IPv4 Address....................: 192.168.1.11
+   Subnet Mask.....................: 255.255.255.0
+   Default Gateway.................: 192.168.1.100
    DHCP Servers....................: 192.168.1.1
-   DNS Servers.....................: ::
-                                     0.0.0.0
 ```
 
-**SW1 – `show interface fa0/1` (first line):**
+**R1 – `show running-config | section dhcp`:**
 
 ```
-SW1#show interface fa0/1
-FastEthernet0/1 is down, line protocol is down (err-disabled)
-  Hardware is Lance, address is 0010.119d.eb01 (bia 0010.119d.eb01)
-  Description: Client ports
-  ...
-     0 output errors, 0 collisions, 10 interface resets
-```
-
-**SW1 – `show port-security interface fa0/1`:**
-
-```
-SW1#show port-security interface fa0/1
-Port Security              : Enabled
-Port Status                : Secure-shutdown
-Violation Mode             : Shutdown
-Aging Time                 : 0 mins
-Aging Type                 : Absolute
-SecureStatic Address Aging : Disabled
-Maximum MAC Addresses      : 1
-Total MAC Addresses        : 1
-Configured MAC Addresses   : 0
-Sticky MAC Addresses       : 1
-Last Source Address:Vlan   : 0002.4AEE.4703:1
-Security Violation Count   : 1
-```
-
-**SW1 – sticky MAC saved in the running config:**
-
-```
-interface FastEthernet0/1
- description Client ports
- switchport mode access
- switchport port-security
- switchport port-security mac-address sticky 
- switchport port-security mac-address sticky 0090.2182.9963
+<!-- Paste your Packet Tracer output here -->
+ip dhcp excluded-address 192.168.1.1 192.168.1.10
+ip dhcp pool LAN
+ network 192.168.1.0 255.255.255.0
+ default-router 192.168.1.100
+ dns-server 198.51.100.10
 ```
 
 **Screenshots:**
 
-*PC1 – no IPv4 address and no link-local address:*
+*PC1 – DHCP-assigned gateway `192.168.1.100`, and PC2 still showing `192.168.1.1`:*
 ![Symptom](screenshots/01-symptom.png)
 
-*SW1 – Fa0/1 err-disabled and port-security violation details:*
+*R1 – DHCP pool configured with `default-router 192.168.1.100`:*
 ![Diagnosis](screenshots/02-diagnosis.png)
 
 ## 4. Root Cause
 
-Port security on SW1 Fa0/1 allows only one MAC address and had learned PC1's MAC
-(`0090.2182.9963`) as a sticky address. At 08:47, the user unplugged PC1 and
-connected a personal laptop (`0002.4AEE.4703`). The switch treated the new MAC as a
-security violation and, with violation mode `shutdown`, put the port into the
-**err-disabled** state. Reconnecting PC1 did not restore the port, because an
-err-disabled port stays down until it is reset.
+The previous evening, the DHCP pool's default router on R1 was changed from
+`192.168.1.1` to `192.168.1.100` in preparation for a new firewall that had not yet
+been installed. No device exists at `.100`.
+
+DHCP clients only receive new options when they obtain or renew a lease. PC1 renewed
+at 08:02 and received the wrong gateway, so it lost internet access. PC2's lease was
+from the previous afternoon, before the change, so it still had the correct gateway
+and would have broken at its next renewal.
 
 ## 5. Resolution
 
-Reset the port on SW1:
+Set the correct default router in the DHCP pool. A new `default-router` line replaces
+the old one:
 
 ```
 conf t
-interface fa0/1
- shutdown
- no shutdown
+ip dhcp pool LAN
+ default-router 192.168.1.1
 end
+write memory
 ```
 
-PC1's MAC remained the sticky address, so PC1 was accepted immediately. The user was
-informed of the policy on personal devices.
+Then renewed the lease on both clients (`ipconfig /release`, `ipconfig /renew`).
 
 ## 6. Verification
 
 | Test | Result |
 |------|--------|
-| `show port-security interface fa0/1` | `Secure-up`, violation count 0, last source = PC1's MAC ✅ |
-| `show interface fa0/1` | `up, line protocol is up` ✅ |
-| `ipconfig` on PC1 | Link-local `FE80::...`, IPv4 `192.168.1.11`, gateway `192.168.1.1` ✅ |
-| `ping 192.168.1.1` and browser → `http://www.lab.local` | Successful ✅ |
+| `show running-config \| section dhcp` on R1 | `default-router 192.168.1.1` ✅ |
+| `ipconfig` on PC1 and PC2 | Gateway `192.168.1.1` ✅ |
+| `ping 198.51.100.10` from PC1 | Successful ✅ |
+| Browser → `http://www.lab.local` | Page loads ✅ |
 
-*Port restored and PC1 back online:*
+*Pool corrected, PC1 renewed with gateway `192.168.1.1` and internet restored:*
 ![Verification](screenshots/03-verification.png)
 
 ## 7. Lessons Learned
 
-- **An empty link-local address means the interface is down.** A PC creates its
-  `FE80::` address by itself as soon as the link comes up. `0.0.0.0` *with* `FE80::`
-  points to DHCP or VLAN ([TKT-002](../TKT-002-wrong-vlan/)); `0.0.0.0` *without* it
-  points to the physical link or switch port.
-- **"Down" isn't a reason.** `show ip interface brief` only said `down`;
-  `show interface` revealed `err-disabled`, which means the switch disabled the port deliberately.
-- **err-disabled has a cause; find it.** `show port-security interface` and
-  `show logging` gave the violating MAC and the exact time.
-- **Use timestamps when questioning users.** "Did you change anything?" got "no";
-  "What happened at 8:47?" got the real answer.
-- **An err-disabled port needs a manual reset** (`shutdown` / `no shutdown`), unless
-  `errdisable recovery cause psecure-violation` is configured to recover it automatically
-  after a timer. Some organisations prefer manual recovery so IT sees every violation.
-- **It's also a policy issue.** Users need to know personal devices aren't allowed on
-  wired ports, and where to connect them instead.
+- **Check where a setting comes from.** The `DHCP Servers` line showed the wrong gateway
+  was assigned by DHCP, so fixing PC1 by hand would only hide the real problem.
+- **Lease timing explains "it works for some people."** A bad DHCP change spreads
+  gradually: clients are affected only when they renew, so recently restarted machines
+  break first.
+- **Read lease times carefully.** With 1-day leases, *expiration − 1 day = when the
+  lease was obtained*. I initially read them backwards.
+- **Know which command shows what.** `show ip dhcp pool` shows usage, not options;
+  `| include dhcp` misses lines like `default-router`. `| section dhcp` shows the
+  whole pool configuration.
+- **Replace, don't just remove.** `no default-router` would leave clients with *no*
+  gateway. Entering the correct `default-router` replaces the wrong value.
+- **Change management:** a live setting was changed for equipment that wasn't installed
+  yet. Gateway changes should happen only when the new device is in place and tested,
+  during a planned change window.
 
 ## Lab Setup (to reproduce)
 
-Port security configured on SW1 Fa0/1 in the base lab:
+Fault introduced on R1 in the base lab:
 
 ```
 conf t
-interface fa0/1
- switchport mode access
- switchport port-security
- switchport port-security maximum 1
- switchport port-security mac-address sticky
- switchport port-security violation shutdown
+ip dhcp pool LAN
+ default-router 192.168.1.100
 end
 ```
 
-PC1 generated traffic so its MAC was learned as sticky, then a laptop was
-connected to Fa0/1 in place of PC1 to trigger the violation, and PC1 was reconnected.
-
-> ⚠️ **Packet Tracer note:** the err-disabled state is not saved in the `.pkt` file.
-> When `lab-broken.pkt` is reopened, the port-security configuration and PC1's sticky
-> MAC are still there, but Fa0/1 starts as `Secure-up`. To reproduce the fault, connect
-> the Laptop to Fa0/1 (DHCP or a ping generates traffic), then reconnect PC1.
-> The screenshots in this ticket were taken while the fault was active.
+Renew PC1 only (Static → DHCP); leave PC2 with its existing lease to show the
+difference between the two clients.
 
 ## Files
 
-- [`lab-broken.pkt`](lab-broken.pkt) – lab with port security configured and the Laptop ready to trigger the violation (see note above)
-- [`lab-fixed.pkt`](lab-fixed.pkt) – lab after the port reset
+- [`lab-broken.pkt`](lab-broken.pkt) – lab with the wrong default router in the DHCP pool
+- [`lab-fixed.pkt`](lab-fixed.pkt) – lab after the fix
 - [`screenshots/`](screenshots/) – symptom, diagnosis and verification evidence
